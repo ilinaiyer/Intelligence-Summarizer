@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload PDF</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Text Extractor</h1>
+        <input type="file" id="pdf-input" accept=".pdf">
+        <div id="error"></div>
+        
+        <div id="pdf-viewer"></div>
+        <button id="extract-btn" style="display: none;">Extract Text</button>
+
+        <h2 id="results-header" style="display: none;">Extracted Text:</h2>
+        <pre id="extracted-text" style="
+            background-color: #f4f4f4;
+            padding: 20px;
+            border: 1px solid #ccc;
+            font-family: monospace;
+            font-size: 16px;
+            color: #222;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            line-height: 1.5;
+            max-height: 400px;
+            overflow-y: auto;"></pre>
+    </div>
+    <h2 id="additional-text" style="display: none;">Additional Text:</h2>
+
+    <button id="summarize-btn" style="display: none;">Summarize with AI</button> 
+    <div id="summary-result" style="display: none; ">
+        <h2>AI Summary:</h2>
+        <div id="summary-text" style="
+            background-color: #f8f8f8;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            white-space: pre-wrap;">
+        </div>
+    </div>
+
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js';
+    
+        const pdfInput = document.getElementById('pdf-input');
+        const pdfViewer = document.getElementById('pdf-viewer');
+        const extractBtn = document.getElementById('extract-btn');
+        const extractedText = document.getElementById('extracted-text');
+        const errorDiv = document.getElementById('error');
+        const resultsHeader = document.getElementById('results-header');
+        const summarizeBtn = document.getElementById('summarize-btn');
+        const summaryResult = document.getElementById('summary-result');
+        const summaryText = document.getElementById('summary-text');
+
+        let extractedTextVariable = '';
+        let pdfDoc = null;
+        let isExtracting = false;
+
+        pdfInput.addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if(!file) return; 
+            
+            if(file.type !== 'application/pdf'){
+                showError("Please select a PDF file");
+                return;
+            }
+            resetUI();
+            errorDiv.textContent = ' ';
+
+            const fileReader = new FileReader();
+            fileReader.onload = function(){
+                const typedArray = new Uint8Array(this.result);
+
+                pdfjsLib.getDocument(typedArray).promise
+                    .then(function(pdf){
+                        pdfDoc = pdf;
+                        displayFirstPage(pdf);
+                        extractBtn.style.display = 'inline-block';
+                        summarizeBtn.style.display = 'none';
+                    })
+                    .catch(function(error){
+                        showError("Error loading PDF: "+error.message);
+                    });
+            };
+            fileReader.readAsArrayBuffer(file);
+        });
+        
+        function displayFirstPage(pdf){
+            pdf.getPage(1).then(function(page){
+                const scale = 1.5;
+                const viewport = page.getViewport({ scale: scale});
+
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                pdfViewer.innerHTML = ' ';
+                pdfViewer.appendChild(canvas);
+                pdfViewer.style.display = 'block';
+
+                page.render({
+                    canvasContext: context,
+                    viewport: viewport
+                });
+            }).catch(showError)
+        }
+        
+        extractBtn.addEventListener('click', function(){
+            if (!pdfDoc || isExtracting) return;
+
+            isExtracting = true;
+            extractedTextVariable = '';
+            const numPages = pdfDoc.numPages;
+            let pagesProcessed = 0;
+
+            extractedText.textContent = 'Extracting text...';
+            resultsHeader.style.display = 'block';
+            extractedText.style.display = 'block';
+            extractBtn.disabled = true;
+
+            function processPage(pageNum) {
+                return pdfDoc.getPage(pageNum)
+                    .then(function(page) {
+                        return page.getTextContent();
+                    })
+                    .then(function(textContent) {
+                        const pageText = textContent.items.map(item => item.str).join(' ');
+                        extractedTextVariable += pageText + '\n\n';
+                        pagesProcessed++;
+                        
+                        // Update progress
+                        extractedText.textContent = `Extracted ${pagesProcessed}/${numPages} pages...\n\n` + 
+                                                  extractedTextVariable.substring(0, 1000) + 
+                                                  (extractedTextVariable.length > 1000 ? "..." : "");
+                        
+                        if (pagesProcessed === numPages) {
+                            extractedText.textContent = extractedTextVariable;
+                            extractBtn.disabled = false;
+                            summarizeBtn.style.display = 'inline-block';
+                            isExtracting = false;
+                        }
+                    });
+            }
+
+            function processAllPages(){
+                let promise = Promise.resolve();
+                for(let i = 1; i <= numPages; i++){
+                    promise = promise.then(() => processPage(i));
+                }
+                return promise; 
+            }
+
+            processAllPages().catch(function(error){
+                showError("Error extracting text: "+error.message);
+                isExtracting = false; 
+                extractBtn.disabled = false;
+            });
+        });
+    summarizeBtn.addEventListener('click', async function() {
+    const API_URL = 'http://127.0.0.1:5001/summarize';
+    
+    summarizeBtn.disabled = true;
+    summaryText.innerHTML = '<span style="color:#666">Testing connection...</span>';
+    summaryResult.style.display = 'block';
+
+    try {
+        // 1. First test basic connection
+        console.log("Testing connection to:", API_URL);
+        const ping = await fetch(API_URL, {
+            method: 'OPTIONS',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        console.log("Connection test status:", ping.status);
+        
+        if (!ping.ok) {
+            throw new Error(`Backend responded with ${ping.status}`);
+        }
+
+        // 2. Make the actual request
+        summaryText.innerHTML = '<span style="color:#666">Generating summary...</span>';
+        console.log("Sending text to summarize...");
+        
+        const response = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: extractedTextVariable
+            }),
+            mode: 'cors'
+        });
+        console.log("Received response status:", response.status);
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`Server error: ${response.status} - ${error}`);
+        }
+
+        const data = await response.json();
+        console.log("Received summary:", data.summary);
+        summaryText.innerHTML = data.summary
+            .split('\n')
+            .map(line => line.trim() ? `• ${line}` : '')
+            .join('<br>');
+
+    } catch (error) {
+        console.error('Full error details:', error);
+        summaryText.innerHTML = `
+            <div style="color:red; padding:10px; background:#ffeeee; border-radius:5px;">
+                <strong>Connection Failed</strong><br>
+                ${error.message}<br><br>
+                <small>Verified:<br>
+                • Backend URL: ${API_URL}<br>
+                • Flask server ${error.message.includes('fetch') ? 'not reachable' : 'responded with error'}</small>
+            </div>`;
+    } finally {
+        summarizeBtn.disabled = false;
+    }
+});
+
+            
+        function showError(message){
+            errorDiv.textContent = message;
+            errorDiv.style.color = 'red'
+            console.error(message);
+        }
+        
+        function resetUI(){
+            pdfViewer.style.display = 'none';
+            extractBtn.style.display = 'none';
+            extractedText.style.display = 'none';
+            resultsHeader.style.display = 'none';
+            summarizeBtn.style.display = 'none';
+            summaryResult.style.display = 'none';
+            extractBtn.disabled = false;
+            summarizeBtn.disabled = false; 
+        }      
+    </script>
+</body>
+</html>
+
